@@ -2639,20 +2639,20 @@ const Game = {
         ctx.font = '56px "Microsoft YaHei"';
         ctx.fillText('𣿅国太空大战模拟器', WIN_W/2, 120);
         ctx.fillStyle = '#ffffff';
-        ctx.font = '18px "Microsoft YaHei"';
-        const tips = ['WASD / 方向键  移动','空格 射击      R 弹反(反弹弹幕)','X 激光大招(集满能量)   B 炸弹','P 暂停   M 静音   Esc 退出','金色道具=永久增益(生命上限/火力)','· 输入特定数字可解锁自定义开局 ·','回车 / 空格  开始游戏'];
-        let y = 260;
+        ctx.font = '16px "Microsoft YaHei"';
+        const tips = ['WASD / 方向键  移动','空格 射击      R 弹反(反弹弹幕)','X 激光大招(集满能量)   B 炸弹','P 暂停   M 静音   Esc 退出','金色道具=永久增益(生命上限/火力)','回车 / 空格  开始游戏'];
+        let y = 200;
         for (const t of tips) { ctx.fillText(t, WIN_W/2, y); y += 34; }
         ctx.fillStyle = '#ffd278';
         ctx.font = '20px Consolas';
         const best = this.ranks.length ? this.ranks[0].score : 0;
-        ctx.fillText(`HIGH SCORE: ${best}`, WIN_W/2, 500);
+        ctx.fillText(`HIGH SCORE: ${best}`, WIN_W/2, 400);
         ctx.fillStyle = '#c8dcff';
         ctx.font = '15px "Microsoft YaHei"';
-        ctx.fillText('—— 排行榜 ——', WIN_W/2, 540);
+        ctx.fillText('—— 排行榜 ——', WIN_W/2, 440);
         ctx.font = '14px Consolas';
         for (let i=0; i<Math.min(5,this.ranks.length); i++) {
-            ctx.fillText(`${i+1}. ${this.ranks[i].name}  ${this.ranks[i].score}`, WIN_W/2-90, 565+i*20);
+            ctx.fillText(`${i+1}. ${this.ranks[i].name}  ${this.ranks[i].score}`, WIN_W/2-90, 465+i*20);
         }
         // 新增：显示数据来源
         ctx.fillStyle = '#6a7a8e';
@@ -3608,17 +3608,14 @@ Game.loadLeaderboardLocal = function() {
     } catch(e) {}
 };
 
+// ===== 替换 tryRecordScore 方法 =====
 Game.tryRecordScore = function() {
     this.rankJustSet = -1;
     if (this.score <= 0) return;
     
-    // 获取玩家名称
-    let name = localStorage.getItem('planeWarPlayerName');
-    if (!name) {
-        name = prompt('请输入你的昵称：', 'Player') || 'Player';
-        if (name.trim() === '') name = 'Player';
-        localStorage.setItem('planeWarPlayerName', name.trim());
-    }
+    // ★ 每次游戏结束都询问玩家名称
+    let name = prompt('请输入你的昵称（用于排行榜）：', 'Player') || 'Player';
+    if (name.trim() === '') name = 'Player';
     name = name.trim();
     
     const apiUrl = 'https://dornhub.eu.org/php/plane_war_leaderboard.php';
@@ -3638,14 +3635,8 @@ Game.tryRecordScore = function() {
             if (data.success) {
                 const playerData = data.data;
                 this.rankJustSet = playerData.rank ? playerData.rank - 1 : -1;
-                this.toast = `✅ 成绩已保存！排名第 ${playerData.rank || '?'} 名`;
+                this.toast = `✅ 成绩已保存！当前排名第 ${playerData.rank || '?'} 名`;
                 this.toastTimer = 200;
-                
-                if (playerData.is_new_record) {
-                    this.toast = '🎉 新纪录！' + this.toast;
-                    this.playSfx('levelup');
-                }
-                
                 this.loadLeaderboard();
             } else {
                 console.error('提交成绩失败:', data.message);
@@ -3662,7 +3653,7 @@ Game.tryRecordScore = function() {
         });
 };
 
-// 本地保存降级方法（新增）
+// 本地保存降级方法（保留）
 Game.saveLeaderboardLocal = function() {
     let name = localStorage.getItem('planeWarPlayerName') || 'Player';
     const ranks = [];
