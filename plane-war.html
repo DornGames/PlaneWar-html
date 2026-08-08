@@ -193,6 +193,10 @@ if (!CanvasRenderingContext2D.prototype.roundRect) {
 // ===== 音频系统：支持暂停/恢复背景音乐 =====
 // ===== 音频系统：支持暂停音效 =====
 // ===== 音频系统：支持暂停/恢复背景音乐 =====
+// ===== 音频系统：支持外部 mp3 文件 =====
+// ===== 音频系统：支持暂停/恢复背景音乐 =====
+// ===== 音频系统：支持暂停音效 =====
+// ===== 音频系统：精简修复版 =====
 const AudioSystem = {
     ctx: null,
     muted: false,
@@ -200,8 +204,13 @@ const AudioSystem = {
     bgmType: null,
     bgmPaused: false,
     bgmCurrentTime: 0,
-    bgmBeforePause: null,      // 暂停前的音乐类型
-    bgmBeforePauseTime: 0,     // 暂停前的播放位置
+    bgmBeforePause: null,
+    bgmBeforePauseTime: 0,
+
+    // ★ 音效缓存（延迟加载）
+    sfxCache: {},
+    // ★ 活跃音效列表
+    activeSounds: [],
 
     // 音效文件映射
     sfxFiles: {
@@ -219,7 +228,6 @@ const AudioSystem = {
         'resume': 'empty.mp3'
     },
 
-    // 背景音乐文件映射
     bgmFiles: {
         'menu': 'bgm_menu.mp3',
         'playing': 'bgm_playing.mp3',
@@ -237,41 +245,87 @@ const AudioSystem = {
         }
     },
 
-    // 播放音效
-    playSfx(type) {
-        if (this.muted || !this.ctx) return;
-        try {
-            const file = this.sfxFiles[type];
-            if (!file) {
-                console.warn(`⚠️ 未找到音效: ${type}`);
-                return;
-            }
-            const audio = new Audio(file);
-            audio.volume = 0.3;
-            audio.play().catch(() => {});
-        } catch(e) {}
+    // ★ 获取或创建音效（延迟加载，只请求一次）
+    _getAudio(type) {
+        // 从缓存获取
+        if (this.sfxCache[type]) {
+            return this.sfxCache[type];
+        }
+
+        const file = this.sfxFiles[type];
+        if (!file) {
+            console.warn(`⚠️ 未找到音效映射: ${type}`);
+            return null;
+        }
+
+        // ★ 只在第一次请求时创建
+        const audio = new Audio(file);
+        audio.volume = 0.3;
+        audio.preload = 'auto';
+        
+        // 缓存起来
+        this.sfxCache[type] = audio;
+        console.log(`📦 加载音效: ${type} (${file})`);
+        
+        return audio;
     },
 
-    // 播放背景音乐
-    playBgm(type, startTime = 0) {
-        console.log(`🎵 playBgm 被调用: type=${type}, startTime=${startTime.toFixed(2)}s, muted=${this.muted}`);
+    // ★ 播放音效（精简版）
+    playSfx(type) {
+        if (this.muted || !this.ctx) return;
 
-        // 如果已静音，只记录要播放的类型
+        try {
+            const audio = this._getAudio(type);
+            if (!audio) return;
+
+            // ★ 克隆节点实现同时播放
+            const clone = audio.cloneNode();
+            clone.volume = audio.volume;
+
+            // 自动清理
+            const cleanup = () => {
+                const idx = this.activeSounds.indexOf(clone);
+                if (idx > -1) this.activeSounds.splice(idx, 1);
+                try { clone.remove(); } catch(e) {}
+            };
+            clone.onended = cleanup;
+            clone.onerror = cleanup;
+
+            const playPromise = clone.play();
+            if (playPromise !== undefined) {
+                playPromise.catch((e) => {
+                    // ★ 静默处理错误，不弹出警告
+                    cleanup();
+                });
+            }
+
+            this.activeSounds.push(clone);
+            
+            // ★ 限制活跃音效数量（防止内存泄漏）
+            if (this.activeSounds.length > 20) {
+                const old = this.activeSounds.splice(0, this.activeSounds.length - 20);
+                old.forEach(s => { try { s.pause(); s.remove(); } catch(e) {} });
+            }
+
+        } catch(e) {
+            // ★ 完全静默，不影响游戏
+        }
+    },
+
+    // ★ 播放背景音乐（精简版）
+    playBgm(type, startTime = 0) {
         if (this.muted) {
             this.bgmType = type;
-            console.log(`🔇 静音中，记录 BGM 类型: ${type}`);
             return;
         }
 
-        // 如果正在播放相同的音乐且未暂停，不重复加载
+        // 已在播放相同音乐
         if (this.bgmType === type && this.bgm && !this.bgm.paused) {
-            console.log(`🎵 背景音乐已在播放: ${type}`);
             return;
         }
 
-        // 如果正在播放相同的音乐但已暂停，继续播放
+        // 继续暂停的音乐
         if (this.bgmType === type && this.bgm && this.bgm.paused) {
-            console.log(`▶️ 继续播放背景音乐: ${type} (从 ${this.bgmCurrentTime.toFixed(2)}s 处)`);
             if (this.bgmCurrentTime > 0) {
                 this.bgm.currentTime = this.bgmCurrentTime;
             }
@@ -280,68 +334,44 @@ const AudioSystem = {
             return;
         }
 
-        // 停止当前音乐，播放新的
+        // 停止并播放新的
         this.stopBgm();
         
         try {
             const file = this.bgmFiles[type];
-            if (!file) {
-                console.warn(`⚠️ 未找到背景音乐: ${type}`);
-                return;
-            }
+            if (!file) return;
             
             this.bgm = new Audio(file);
             this.bgm.loop = true;
             this.bgm.volume = 0.2;
             
-            // 如果有指定的开始位置，设置它
             if (startTime > 0) {
                 this.bgm.currentTime = startTime;
             }
             
-            this.bgm.oncanplaythrough = () => {
-                console.log(`✅ 背景音乐加载完成: ${file}`);
-            };
-            
-            this.bgm.onerror = (e) => {
-                console.warn(`⚠️ 背景音乐加载失败 (${file}):`, e);
-            };
-            
-            this.bgm.play().then(() => {
-                console.log(`▶️ 开始播放背景音乐: ${file} (位置: ${this.bgm.currentTime.toFixed(2)}s)`);
-            }).catch((e) => {
-                console.warn(`⚠️ 背景音乐播放失败 (${type}):`, e);
-            });
+            this.bgm.play().catch(() => {});
             
             this.bgmType = type;
             this.bgmPaused = false;
             this.bgmCurrentTime = startTime;
             
         } catch(e) {
-            console.warn('⚠️ 背景音乐加载失败:', e);
+            // 静默失败
         }
     },
 
-    // 暂停背景音乐（用于静音）
+    // 暂停背景音乐
     pauseBgm() {
         if (this.bgm && !this.bgm.paused) {
             this.bgmCurrentTime = this.bgm.currentTime;
             this.bgm.pause();
             this.bgmPaused = true;
-            console.log(`⏸️ 背景音乐已暂停 (位置: ${this.bgmCurrentTime.toFixed(2)}s)`);
-        } else if (this.bgm && this.bgm.paused) {
-            console.log(`⏸️ 背景音乐已经是暂停状态`);
-        } else {
-            console.log(`⏸️ 没有正在播放的背景音乐`);
         }
     },
 
-    // 恢复背景音乐（取消静音时调用）
+    // 恢复背景音乐
     resumeBgm() {
-        if (this.muted) {
-            console.log(`🔇 仍然静音中，不恢复`);
-            return;
-        }
+        if (this.muted) return;
         
         if (this.bgm && this.bgm.paused) {
             if (this.bgmCurrentTime > 0) {
@@ -349,7 +379,6 @@ const AudioSystem = {
             }
             this.bgm.play().catch(() => {});
             this.bgmPaused = false;
-            console.log(`▶️ 背景音乐已恢复 (位置: ${this.bgmCurrentTime.toFixed(2)}s)`);
         } else if (this.bgmType) {
             this.playBgm(this.bgmType);
         }
@@ -364,63 +393,32 @@ const AudioSystem = {
         this.bgmType = null;
         this.bgmPaused = false;
         this.bgmCurrentTime = 0;
-        console.log('⏹️ 背景音乐已停止');
     },
 
-    // ===== 核心修复：暂停游戏音乐（记录位置） =====
+    // 暂停游戏音乐
     pauseGameMusic() {
-        console.log('⏸️ 暂停游戏音乐');
-        
-        // 播放暂停音效
-        this.playSfx('pause');
-        
-        // 如果当前有背景音乐在播放，记录它
         if (this.bgm && !this.bgm.paused) {
-            // ★ 关键：记录当前播放的音乐类型和位置
             this.bgmBeforePause = this.bgmType;
             this.bgmBeforePauseTime = this.bgm.currentTime;
             this.bgmCurrentTime = this.bgm.currentTime;
-            
-            // 暂停当前音乐
             this.bgm.pause();
             this.bgmPaused = true;
-            
-            console.log(`📝 记录暂停状态: type=${this.bgmBeforePause}, position=${this.bgmBeforePauseTime.toFixed(2)}s`);
         } else if (this.bgmType) {
-            // 如果没有 bgm 对象但有类型记录
             this.bgmBeforePause = this.bgmType;
             this.bgmBeforePauseTime = this.bgmCurrentTime || 0;
-            console.log(`📝 记录暂停状态 (无bgm对象): type=${this.bgmBeforePause}, position=${this.bgmBeforePauseTime.toFixed(2)}s`);
         }
         
-        // 停止当前音乐（如果有）
         this.stopBgm();
-        
-        // 播放暂停菜单背景音乐
         this.playBgm('pause');
     },
 
-    // ===== 核心修复：恢复游戏音乐（从记录位置继续） =====
+    // 恢复游戏音乐
     resumeGameMusic() {
-        console.log('▶️ 恢复游戏音乐');
-        
-        // 播放恢复音效
-        this.playSfx('resume');
-        
-        // 停止暂停音乐
         this.stopBgm();
-        
-        // 恢复之前的音乐
         const previousType = this.bgmBeforePause || 'playing';
         const previousTime = this.bgmBeforePauseTime || 0;
-        
-        console.log(`📝 恢复音乐: type=${previousType}, position=${previousTime.toFixed(2)}s`);
-        
-        // 重置记录
         this.bgmBeforePause = null;
         this.bgmBeforePauseTime = 0;
-        
-        // 播放之前的音乐，从记录的位置继续
         this.playBgm(previousType, previousTime);
     },
 
@@ -430,51 +428,60 @@ const AudioSystem = {
         
         if (this.muted) {
             this.pauseBgm();
-            console.log('🔇 已静音');
         } else {
             if (this.ctx && this.ctx.state === 'suspended') {
                 this.ctx.resume();
             }
             this.resumeBgm();
-            console.log('🔊 已取消静音');
         }
         
         return this.muted;
     },
 
-    // 切换背景音乐（场景切换时调用）
+    // 切换背景音乐
     switchBgm(type) {
-        console.log(`🔄 switchBgm 被调用: type=${type}, muted=${this.muted}`);
-        
-        // 如果当前静音，只记录类型
         if (this.muted) {
             this.bgmType = type;
-            this.bgmCurrentTime = 0;
-            console.log(`🔇 静音中，切换 BGM 类型: ${type}`);
             return;
         }
         
-        // 如果正在播放相同的音乐，不切换
         if (this.bgmType === type && this.bgm && !this.bgm.paused) {
-            console.log(`🎵 已在播放相同的 BGM: ${type}`);
             return;
         }
         
-        // 切换音乐
         this.stopBgm();
         this.playBgm(type);
     },
 
+    // ★ 获取状态（用于调试）
     getStatus() {
         return {
             muted: this.muted,
             bgmType: this.bgmType,
-            bgmBeforePause: this.bgmBeforePause,
-            bgmBeforePauseTime: this.bgmBeforePauseTime,
             isPlaying: this.bgm && !this.bgm.paused,
-            currentTime: this.bgm ? this.bgm.currentTime : 0,
-            paused: this.bgmPaused
+            cachedSfx: Object.keys(this.sfxCache).length,
+            activeSounds: this.activeSounds.length
         };
+    },
+
+    // ★ 清理资源
+    dispose() {
+        this.activeSounds.forEach(sound => {
+            try { sound.pause(); sound.remove(); } catch(e) {}
+        });
+        this.activeSounds = [];
+        
+        for (const audio of Object.values(this.sfxCache)) {
+            try { audio.pause(); audio.remove(); } catch(e) {}
+        }
+        this.sfxCache = {};
+        
+        this.stopBgm();
+        
+        if (this.ctx && this.ctx.state !== 'closed') {
+            try { this.ctx.close(); } catch(e) {}
+        }
+        this.ctx = null;
     }
 };
 
@@ -635,7 +642,11 @@ const Game = {
             }
         }
         this.loadLeaderboard();
+        
+        // ★ 修改：初始化音频系统并预加载音效
         AudioSystem.init();
+        
+        console.log('🎵 音频系统初始化完成');
     },
 
     // 音效封装（调用 AudioSystem）
@@ -2639,7 +2650,7 @@ const Game = {
         ctx.font = '56px "Microsoft YaHei"';
         ctx.fillText('𣿅国太空大战模拟器', WIN_W/2, 120);
         ctx.fillStyle = '#ffffff';
-        ctx.font = '16px "Microsoft YaHei"';
+        ctx.font = '15px "Microsoft YaHei"';
         const tips = ['WASD / 方向键  移动','空格 射击      R 弹反(反弹弹幕)','X 激光大招(集满能量)   B 炸弹','P 暂停   M 静音   Esc 退出','金色道具=永久增益(生命上限/火力)','回车 / 空格  开始游戏'];
         let y = 200;
         for (const t of tips) { ctx.fillText(t, WIN_W/2, y); y += 34; }
@@ -2657,7 +2668,7 @@ const Game = {
         // 新增：显示数据来源
         ctx.fillStyle = '#6a7a8e';
         ctx.font = '11px "Microsoft YaHei"';
-        ctx.fillText('(云端数据)', WIN_W/2 + 110, 565 + Math.min(5,this.ranks.length)*20 - 2);
+        ctx.fillText('(云端数据)', WIN_W/2 + 110, 465 + Math.min(5,this.ranks.length)*20 - 2);
     },
 
     drawCheatPanel(ctx) {
@@ -3549,11 +3560,31 @@ const Game = {
         // 其他状态不切换音乐
     },
 
+    // 在 Game.start() 方法后面添加或修改
     start() {
         this.init();
         this.state = 'MENU';
         this.lastFrameTime = performance.now();
         this.loop(this.lastFrameTime);
+        
+        // ★ 监听用户首次交互，恢复 AudioContext
+            const resumeAudio = () => {
+                if (AudioSystem.ctx && AudioSystem.ctx.state === 'suspended') {
+                    AudioSystem.ctx.resume().then(() => {
+                        console.log('✅ AudioContext 已恢复');
+                        document.removeEventListener('click', resumeAudio);
+                        document.removeEventListener('keydown', resumeAudio);
+                        document.removeEventListener('touchstart', resumeAudio);
+                    }).catch(() => {});
+                }
+            };
+        
+        // 监听用户交互事件
+        document.addEventListener('click', resumeAudio);
+        document.addEventListener('keydown', resumeAudio);
+        document.addEventListener('touchstart', resumeAudio);
+        
+        console.log('🎮 游戏已启动，等待用户交互以启用音频...');
     }
 };
 
@@ -3692,15 +3723,15 @@ document.addEventListener('keydown', (e) => {
     // 菜单状态
     // ============================================================
     if (g.state === 'MENU') {
-        // 开始游戏
         if (e.key === 'Enter' || e.key === ' ') {
+            // ★ 恢复 AudioContext
+            if (AudioSystem.ctx && AudioSystem.ctx.state === 'suspended') {
+                AudioSystem.ctx.resume().catch(() => {});
+            }
+            
             g.cheatOn = false;
             g.init();
             g.state = 'PLAYING';
-            // 恢复音频上下文
-            if (AudioSystem.ctx && AudioSystem.ctx.state === 'suspended') {
-                AudioSystem.ctx.resume();
-            }
             AudioSystem.switchBgm('playing');
             e.preventDefault();
         }
@@ -4162,6 +4193,11 @@ function colorLerp(c1, c2, t) {
 
 window.onload = function() {
     Game.start();
+    
+    // ★ 页面卸载时清理
+        window.addEventListener('beforeunload', function() {
+            AudioSystem.dispose();
+        });
 };
 </script>
 </body>
